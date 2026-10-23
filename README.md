@@ -72,6 +72,8 @@ scale: 1.2
 | « Impossible de joindre MétéoKouran » | aucune réponse depuis l'ouverture de la page |
 | « Adresse de MétéoKouran inconnue » | ni `url` ni `url_entity` ne donnent d'adresse |
 | Heures hachurées, « Prévision à venir » | EDF n'a pas encore publié ces heures ou ces jours |
+| Bandeau « EDF signale un cyclone en cours · depuis HH:MM » en tête | EDF signale un cyclone pour l'heure actuelle (son champ `cyclone_en_cours`). Ce n'est pas une alerte officielle ; rien ne s'affiche sinon |
+| Bandeau « Cyclone annoncé par EDF à partir de … » en tête | EDF signale déjà une heure à venir (jusqu'à J+4), pas encore l'heure actuelle. Remplacé par le bandeau « en cours » dès la première heure signalée |
 
 ## Source des données et licences
 - **Données** : EDF Réunion, jeu « Météo de l’électricité - Réunion » du portail https://opendata-reunion.edf.fr, sous **Licence Ouverte Etalab 2.0**. Le pied de la carte affiche toujours « Source : EDF » et la date de mise à jour des données par EDF, comme l'exige cette licence : ne pas le masquer.

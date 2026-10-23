@@ -14,7 +14,7 @@
  * see homeassistant/tests/); the element only fetches and renders.
  */
 
-export const VERSION = '1.1.1';
+export const VERSION = '1.2.0';
 
 const HOUR = 3600000;
 // Réunion is UTC+4 all year round (no daylight saving time). Every hour is
@@ -138,6 +138,46 @@ export function hourIndex(payload) {
     }
   }
   return index;
+}
+
+/**
+ * EDF's "cyclone en cours" flag of the hour in progress (API 2026-10-23 and later; absent before).
+ * null unless that hour is flagged true: no flag, false, or an older API all mean "nothing to show",
+ * never "no cyclone". `sinceMs`: start of the run of flagged hours leading to now, null when the run
+ * starts at the first hour of the response (it may have started earlier).
+ */
+export function cycloneState(payload, nowMs) {
+  const flags = cycloneFlags(payload);
+  const start = hourStart(nowMs);
+  if (flags.get(start) !== true) return null;
+  let since = start;
+  while (flags.get(since - HOUR) === true) since -= HOUR;
+  return { sinceMs: since === Math.min(...flags.keys()) ? null : since };
+}
+
+/**
+ * EDF announces a cyclone: an hour after the one in progress is flagged, the hour in progress is not
+ * (the "in progress" banner says more then). The response stops at J+4, the window EDF's app reads.
+ * null otherwise, never "no cyclone". `firstMs`: first flagged hour.
+ */
+export function cycloneAnnounced(payload, nowMs) {
+  const flags = cycloneFlags(payload);
+  const start = hourStart(nowMs);
+  if (flags.get(start) === true) return null;
+  const ahead = [...flags].filter(([ms, flagged]) => flagged && ms > start).map(([ms]) => ms);
+  return ahead.length ? { firstMs: Math.min(...ahead) } : null;
+}
+
+/** Map hour start (epoch ms) → EDF flag cyclone_en_cours (false when absent: older API). */
+function cycloneFlags(payload) {
+  const flags = new Map();
+  for (const day of payload?.data?.days ?? []) {
+    for (const hour of day?.hours ?? []) {
+      const ms = Date.parse(hour?.start);
+      if (!Number.isNaN(ms)) flags.set(ms, hour.cyclone_en_cours === true);
+    }
+  }
+  return flags;
 }
 
 /** `count` hourly slots from the current hour; `key` is null when the hour is not published. */
@@ -382,6 +422,19 @@ function renderLegend() {
     + `<span><strong>${s.label}</strong>&nbsp;: ${esc(s.legend)}</span></li>`).join('')}</ul>`;
 }
 
+function renderCyclone(payload, nowMs) {
+  const cyclone = cycloneState(payload, nowMs);
+  if (!cyclone) {
+    const announced = cycloneAnnounced(payload, nowMs);
+    if (!announced) return '';
+    return '<div class="cyclone" role="status"><ha-icon icon="mdi:weather-hurricane-outline"></ha-icon>'
+      + `<span><strong>Cyclone annoncé par EDF</strong> à partir de ${esc(whenLabel(announced.firstMs, nowMs))}</span></div>`;
+  }
+  const since = cyclone.sinceMs === null ? '' : ` · depuis ${esc(whenLabel(cyclone.sinceMs, nowMs))}`;
+  return '<div class="cyclone" role="status"><ha-icon icon="mdi:weather-hurricane"></ha-icon>'
+    + `<span><strong>EDF signale un cyclone en cours</strong>${since}</span></div>`;
+}
+
 const scaleStyle = (config) => (config.scale === 1 ? '' : ` style="--mk-s:${config.scale}"`);
 
 /**
@@ -409,6 +462,7 @@ export function renderCard(state) {
   if (payload.meta?.stale) warnings.push('⚠️ Données anciennes');
   if (state.error && state.lastOk) warnings.push(`⚠️ Données non actualisées depuis ${formatTime(state.lastOk)}`);
   return `<ha-card><div class="mk"${scaleStyle(config)}>${heading}`
+    + renderCyclone(payload, nowMs)
     + `<div class="state"><span class="pill big" data-k="${key ?? 'none'}">${icon(key)}</span>`
     + `<span class="title">${esc(stateTitle(index, nowMs))}</span></div>`
     + `<p class="phrase">${esc(summary(index, nowMs))}</p>`
@@ -480,6 +534,11 @@ const STYLE = `
 .legend li { display: flex; align-items: center; gap: 8px; }
 .foot { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: calc(.86rem * var(--s)); color: var(--secondary-text-color, #727272); }
 .warn { color: var(--warning-color, #b45309); font-weight: 600; }
+/* Text and icon, never colour alone; theme's warning colour as an accent only. */
+.cyclone { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; padding: 8px 10px;
+  border-radius: 10px; border: 2px solid var(--warning-color, #b45309);
+  font-size: calc(1.02rem * var(--s)); line-height: 1.3; --mdc-icon-size: calc(24px * var(--s)); }
+.cyclone ha-icon { flex: none; color: var(--warning-color, #b45309); }
 .message { margin: 8px 0 0; line-height: 1.4; font-size: calc(1.05rem * var(--s)); }
 code { font-size: .85em; }
 @media (prefers-reduced-motion: no-preference) {
