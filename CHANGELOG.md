@@ -2,6 +2,11 @@
 
 Chaque version publiée a sa section `## X.Y.Z` : c'est elle qui sert de notes à la release GitHub.
 
+## 1.1.1
+
+- Frise : le nom du jour posé à minuit (« Demain ») ne chevauche plus « ▾ Maintenant » le soir. Il est masqué s'il en est à moins de 8 px ; le trait de minuit reste toujours affiché.
+- Graduations recalculées après chaque actualisation des données, au chargement de la police, au retour de la carte à l'écran et au changement d'heure (avant : seulement au premier affichage et quand la largeur changeait).
+
 ## 1.1.0
 
 Première version publiée sur HACS.

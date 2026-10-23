@@ -4,7 +4,7 @@
  * Shows EDF Réunion's "météo de l'électricité" read from the MétéoKouran API:
  * current state, a sentence, a timeline starting now, and the coming days.
  * Plain JavaScript module: no build step, no dependency. Load it as a
- * "JavaScript module" resource (/local/meteokouran-card.js?v=2: change ?v= on
+ * "JavaScript module" resource (/local/meteokouran-card.js?v=3: change ?v= on
  * every update, or the mobile app keeps the old file).
  *
  * Data: EDF (Licence Ouverte Etalab 2.0). The footer always shows
@@ -14,7 +14,7 @@
  * see homeassistant/tests/); the element only fetches and renders.
  */
 
-export const VERSION = '1.1.0';
+export const VERSION = '1.1.1';
 
 const HOUR = 3600000;
 // Réunion is UTC+4 all year round (no daylight saving time). Every hour is
@@ -229,14 +229,16 @@ export function timelineAria(blocks, nowMs) {
 /**
  * Which labels of a row to show, from their measured boxes (px, relative to
  * the row; sorted by position). Labels are never moved: a label that would
- * leave the row (by more than `slack`) or touch an obstacle is hidden; when
- * labels overlap, only every 6 h, then 12 h, then 24 h are kept, so the
- * visible ones stay evenly spaced.
+ * leave the row (by more than `slack`) or come closer than OBSTACLE_GAP to an
+ * obstacle ("Maintenant") is hidden; when labels overlap, only every 6 h, then
+ * 12 h, then 24 h are kept, so the visible ones stay evenly spaced.
  * labels: [{ left, right, every }] → one boolean per label.
  */
+export const OBSTACLE_GAP = 8;
+
 export function fitLabels(labels, width, gap = 4, obstacles = [], slack = 0) {
   const fits = (l) => l.left >= -slack && l.right <= width + slack
-    && obstacles.every((o) => l.right + gap <= o.left || l.left >= o.right + gap);
+    && obstacles.every((o) => l.right + OBSTACLE_GAP <= o.left || l.left >= o.right + OBSTACLE_GAP);
   const apart = (kept) => kept.every((l, i) => i === 0 || kept[i - 1].right + gap <= l.left);
   for (const step of [3, 6, 12, 24]) {
     const kept = labels.filter((l) => l.every >= step && fits(l));
@@ -501,6 +503,11 @@ export class MeteoKouranCard extends Base {
     this._fetchedUrl = undefined;
     this._renderedHour = null;
     this._timers = {};
+    this._frame = null;
+    this._onFonts = () => this._scheduleFit();
+    this._onVisibility = () => {
+      if (globalThis.document?.visibilityState === 'visible') this._shown();
+    };
   }
 
   static getStubConfig() {
@@ -529,6 +536,17 @@ export class MeteoKouranCard extends Base {
     }
   }
 
+  /** Back on screen (tab or app in the foreground again): catch up on the hour, or refit the labels. */
+  _shown() {
+    if (!this._config || !this.isConnected) return;
+    if (hourStart(Date.now()) !== this._renderedHour) {
+      this._render();
+      this._load();
+    } else {
+      this._scheduleFit();
+    }
+  }
+
   getCardSize() {
     const c = this._config ?? normalizeConfig({});
     return Math.ceil((4 + (c.days > 0 ? 2 : 0) + (c.show_legend ? 2 : 0)) * c.scale);
@@ -536,11 +554,23 @@ export class MeteoKouranCard extends Base {
 
   connectedCallback() {
     if (!this.shadowRoot) this.attachShadow({ mode: 'open' });
+    // Which labels fit depends on the card's width, on the font, and needs a
+    // laid-out card: refit on resize, once fonts are loaded, and when the card
+    // becomes visible again (none of these is a resize).
     if (globalThis.ResizeObserver) {
-      // Which labels fit depends on the card's width.
-      this._resize = new ResizeObserver(() => this._fitLabels());
+      this._resize = new ResizeObserver(() => this._scheduleFit());
       this._resize.observe(this);
     }
+    if (globalThis.IntersectionObserver) {
+      this._visible = new IntersectionObserver((entries) => {
+        if (entries.some((e) => e.isIntersecting)) this._scheduleFit();
+      });
+      this._visible.observe(this);
+    }
+    const doc = globalThis.document;
+    doc?.fonts?.addEventListener?.('loadingdone', this._onFonts);
+    doc?.fonts?.ready?.then(this._onFonts);
+    doc?.addEventListener?.('visibilitychange', this._onVisibility);
     this._timers.refresh = setInterval(() => this._load(), REFRESH_MS);
     this._scheduleHour();
     this._render();
@@ -550,6 +580,12 @@ export class MeteoKouranCard extends Base {
   disconnectedCallback() {
     this._resize?.disconnect();
     this._resize = null;
+    this._visible?.disconnect();
+    this._visible = null;
+    globalThis.document?.fonts?.removeEventListener?.('loadingdone', this._onFonts);
+    globalThis.document?.removeEventListener?.('visibilitychange', this._onVisibility);
+    if (this._frame !== null) cancelAnimationFrame(this._frame);
+    this._frame = null;
     clearInterval(this._timers.refresh);
     clearTimeout(this._timers.hour);
     clearTimeout(this._timers.retry);
@@ -613,7 +649,22 @@ export class MeteoKouranCard extends Base {
       lastOk: this._lastOk,
       error: this._error,
     })}`;
+    this._scheduleFit();
+  }
+
+  /**
+   * Fits the labels now, and again at the next frame: HA's ha-card (a Lit
+   * element) renders its <slot> a microtask after the card's innerHTML, so the
+   * new labels may not be laid out yet, and the card keeping its size, no
+   * ResizeObserver call would follow.
+   */
+  _scheduleFit() {
     this._fitLabels();
+    if (!globalThis.requestAnimationFrame || this._frame !== null) return;
+    this._frame = requestAnimationFrame(() => {
+      this._frame = null;
+      this._fitLabels();
+    });
   }
 
   /** Hides the timeline labels that do not fit at the current width (they are never moved). */
@@ -626,7 +677,7 @@ export class MeteoKouranCard extends Base {
     };
     for (const row of root.querySelectorAll('.above, .ticks')) {
       const frame = row.getBoundingClientRect();
-      if (!frame.width) continue; // not laid out yet: the ResizeObserver calls again
+      if (!frame.width) continue; // not laid out yet (hidden, ha-card not rendered): refit later
       const items = [...row.querySelectorAll('.tick, .dayname')];
       const now = row.querySelector('.now');
       // Slack: a label may run 8 px into the card's 16 px padding.
